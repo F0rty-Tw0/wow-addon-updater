@@ -13,6 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate addons.json
+        run: jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and test("^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$"))' addons.json
+
       - name: Run bump tests
         run: bash bump.test.sh
 

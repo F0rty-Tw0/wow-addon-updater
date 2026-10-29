@@ -19,17 +19,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.read.outputs.repos }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read addons.json
+        id: read
+        run: echo "repos=$(jq -c . addons.json)" >> "$GITHUB_OUTPUT"
+
   bump:
+    needs: list
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        repo:
-          - WhisperMessenger
-          - LevelUpInfo
-          - MouseOverTooltip
-          - RaidGroupWrap
-          - ShoulderCam
+        repo: ${{ fromJSON(needs.list.outputs.repos) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +51,7 @@ jobs:
           REPO: ${{ matrix.repo }}
         run: |
           set +e
-          line=$(bash bump.sh "F0rty-Tw0/${REPO}")
+          line=$(bash bump.sh "$REPO")
           status=$?
           echo "${REPO}: ${line:-error: no result line}" >> "$GITHUB_STEP_SUMMARY"
           echo "$line"

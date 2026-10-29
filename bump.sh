@@ -2,7 +2,8 @@
 # Usage: bash bump.sh <owner/repo>
 # Releases a TOC-only patch when the latest tag lags Blizzard's live interface
 # numbers, then syncs master. Stdout is exactly one result line; logs go to stderr.
-# Env: GH_TOKEN, DRY_RUN (non-empty = dry run), REPO_URL (clone source override).
+# Env: GH_TOKEN, DRY_RUN (non-empty = dry run), REPO_URL (clone source override),
+# RESULT_FILE (path; also write the outcome there as JSON, for report.sh).
 set -euo pipefail
 
 # fd 3 = real stdout (result line only); everything else goes to stderr.
@@ -11,10 +12,38 @@ exec 3>&1 1>&2
 REPO=${1:?usage: bump.sh <owner/repo>}
 DRY=${DRY_RUN:-}
 
+# A relative RESULT_FILE is resolved now, because the script cd's into the clone later.
+RESULT_FILE=${RESULT_FILE:-}
+case "$RESULT_FILE" in '' | /* | [A-Za-z]:*) ;; *) RESULT_FILE="$PWD/$RESULT_FILE" ;; esac
+BASE='' NEXT='' PAIRS='' TAG_URL='' PR_URL=''
+
 log() { echo "bump: $*"; }
+
+# JSON string body: escape backslash and double quote, flatten control whitespace.
+json_str() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/ }
+  s=${s//$'\r'/ }
+  s=${s//$'\t'/ }
+  printf '%s' "$s"
+}
+
+write_result_file() { # result text (unprefixed)
+  [ -n "$RESULT_FILE" ] || return 0
+  local dry=false
+  [ -z "$DRY" ] || dry=true
+  printf '{"repo":"%s","result":"%s","dry_run":%s,"base":"%s","next":"%s","pairs":"%s","tag_url":"%s","pr_url":"%s"}\n' \
+    "$(json_str "$REPO")" "$(json_str "$1")" "$dry" "$(json_str "$BASE")" "$(json_str "$NEXT")" \
+    "$(json_str "$PAIRS")" "$(json_str "$TAG_URL")" "$(json_str "$PR_URL")" > "$RESULT_FILE" \
+    || log "could not write $RESULT_FILE"
+}
+
 result() {
   local prefix=''
   [ -z "$DRY" ] || prefix='[dry-run] would have: '
+  write_result_file "$1"
   printf '%s%s\n' "$prefix" "$1" >&3
 }
 die() { result "error: $1"; exit 1; }
@@ -115,6 +144,7 @@ bash scripts/release.sh "${NEXT#v}" || die "release.sh failed"
 # 6. Push the tag only; the addon's release.yml takes it from there.
 if [ -z "$DRY" ]; then
   git push -q origin "$NEXT" || die "push of $NEXT failed"
+  TAG_URL="https://github.com/$REPO/releases/tag/$NEXT"
 fi
 
 # 7. Sync master.
@@ -138,6 +168,7 @@ master_pr() {
     n=${url##*/}
     [[ $n =~ ^[0-9]+$ ]] || sync_fail "gh pr create failed"
   fi
+  PR_URL="https://github.com/$REPO/pull/$n"
   result "released $NEXT, master PR #$n"
   exit 0
 }

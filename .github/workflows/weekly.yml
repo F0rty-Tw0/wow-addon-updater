@@ -49,6 +49,7 @@ jobs:
           GH_TOKEN: ${{ secrets.ADDON_BOT_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           REPO: ${{ matrix.repo }}
+          RESULT_FILE: result-${{ strategy.job-index }}.json
         run: |
           set +e
           line=$(bash bump.sh "$REPO")
@@ -56,3 +57,34 @@ jobs:
           echo "${REPO}: ${line:-error: no result line}" >> "$GITHUB_STEP_SUMMARY"
           echo "$line"
           exit $status
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ strategy.job-index }}
+          path: result-${{ strategy.job-index }}.json
+          if-no-files-found: ignore
+
+  report:
+    needs: [list, bump]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: result-*
+          merge-multiple: true
+          path: results
+
+      - name: Report
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: bash report.sh --publish addons.json results | tee -a "$GITHUB_STEP_SUMMARY"

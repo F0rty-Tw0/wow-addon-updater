@@ -19,8 +19,11 @@ jobs:
       - name: Run bump tests
         run: bash bump.test.sh
 
+      - name: Run report tests
+        run: bash report.test.sh
+
       - name: Shellcheck
-        run: shellcheck bump.sh bump.test.sh
+        run: shellcheck bump.sh bump.test.sh report.sh report.test.sh
 
       - name: Actionlint
         run: |

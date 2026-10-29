@@ -9,7 +9,7 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
 
-unset DRY_RUN GH_STUB_PR_LIST GH_STUB_CREATE_FAIL FAKE_FAIL FIXTURE_NOTAG FIXTURE_NO_UNRELEASED
+unset DRY_RUN RESULT_FILE GH_STUB_PR_LIST GH_STUB_CREATE_FAIL FAKE_FAIL FIXTURE_NOTAG FIXTURE_NO_UNRELEASED
 
 # Stub gh: logs its args, answers `pr list` / `pr create` from env.
 cat > "$T/bin/gh" <<'EOF'
@@ -113,7 +113,8 @@ run_bump() {
   local name=$1
   : > "$D/gh.log"
   set +e
-  OUT=$(PATH="$T/bin:$PATH" GH_LOG="$D/gh.log" REPO_URL="$BARE" bash "$HERE/bump.sh" "F0rty-Tw0/$name" 2>"$D/err")
+  rm -f "$D/result.json"
+  OUT=$(PATH="$T/bin:$PATH" GH_LOG="$D/gh.log" REPO_URL="$BARE" RESULT_FILE="$D/result.json" bash "$HERE/bump.sh" "F0rty-Tw0/$name" 2>"$D/err")
   RC=$?
   set -e
   ERR=$(tail -n 15 "$D/err")
@@ -127,6 +128,20 @@ assert_out() { # expected-stdout expected-rc
 # CHANGELOG lines under heading `## [x.y.z]` of a tag in the bare repo.
 section_of() { # tag version
   bare_show "$1:CHANGELOG.md" | awk -v h="## [$2]" 'index($0,h)==1{f=1;next} /^## \[/{f=0} f'
+}
+
+# Python is "python3" on ubuntu, "python" on Git Bash (python3 there can be a Store stub).
+PY=""
+for c in python3 python; do
+  if "$c" -c 'import sys' > /dev/null 2>&1; then PY=$c; break; fi
+done
+[ -n "$PY" ] || fail "python not found"
+
+# result_json: the RESULT_FILE of the last run as canonical JSON (sorted keys, ASCII-escaped);
+# fails when the file is missing or not valid JSON.
+result_json() {
+  [ -f "$D/result.json" ] || fail "RESULT_FILE not written (stderr: $ERR)"
+  PYTHONIOENCODING=utf-8 "$PY" -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding="utf-8")), sort_keys=True, separators=(",", ":"), ensure_ascii=False))' "$D/result.json"     || fail "RESULT_FILE is not valid JSON: $(cat "$D/result.json")"
 }
 
 BULLET='- Updated for the latest World of Warcraft patch'
@@ -312,6 +327,64 @@ case_conflict_dry() {
   [ ! -s "$D/gh.log" ] || fail "gh was called: $(cat "$D/gh.log")"
 }
 
+# --- Addendum 2026-10-30: RESULT_FILE json ---
+
+case_json_release_real() {
+  make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507"
+  run_bump x
+  assert_out "released v1.0.1, master synced" 0
+  eq "$(result_json)" '{"base":"v1.0.0","dry_run":false,"next":"v1.0.1","pairs":"20506 → 20507","pr_url":"","repo":"F0rty-Tw0/x","result":"released v1.0.1, master synced","tag_url":"https://github.com/F0rty-Tw0/x/releases/tag/v1.0.1"}' "result json"
+}
+
+case_json_skip_dry() {
+  make_fixture x; export DRY_RUN=1
+  run_bump x
+  assert_out "[dry-run] would have: skipped (up to date)" 0
+  eq "$(result_json)" '{"base":"v1.0.0","dry_run":true,"next":"v1.0.1","pairs":"","pr_url":"","repo":"F0rty-Tw0/x","result":"skipped (up to date)","tag_url":""}' "result json"
+}
+
+case_json_release_dry() {
+  make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507" DRY_RUN=1
+  run_bump x
+  assert_out "[dry-run] would have: released v1.0.1, master synced" 0
+  eq "$(result_json)" '{"base":"v1.0.0","dry_run":true,"next":"v1.0.1","pairs":"20506 → 20507","pr_url":"","repo":"F0rty-Tw0/x","result":"released v1.0.1, master synced","tag_url":""}' "result json"
+}
+
+case_json_pr() {
+  make_fixture x; master_conflict; export FAKE_INTERFACE="11509, 16001, 20507"
+  run_bump x
+  assert_out "released v1.0.1, master PR #7" 0
+  eq "$(result_json)" '{"base":"v1.0.0","dry_run":false,"next":"v1.0.1","pairs":"20506 → 20507","pr_url":"https://github.com/F0rty-Tw0/x/pull/7","repo":"F0rty-Tw0/x","result":"released v1.0.1, master PR #7","tag_url":"https://github.com/F0rty-Tw0/x/releases/tag/v1.0.1"}' "result json"
+}
+
+case_json_error() {
+  FIXTURE_NOTAG=1 make_fixture x
+  run_bump x
+  assert_out "error: no release tag" 1
+  eq "$(result_json)" '{"base":"","dry_run":false,"next":"","pairs":"","pr_url":"","repo":"F0rty-Tw0/x","result":"error: no release tag","tag_url":""}' "result json"
+}
+
+case_json_escaping() {
+  make_fixture x
+  run_bump 'we"ird\name'
+  assert_out "skipped (up to date)" 0
+  has "$(result_json)" '"repo":"F0rty-Tw0/we\"ird\\name"' "repo escaped"
+}
+
+case_json_relative_path() {
+  make_fixture x
+  : > "$D/gh.log"
+  ( cd "$D" && PATH="$T/bin:$PATH" GH_LOG="$D/gh.log" REPO_URL="$BARE" RESULT_FILE="rel.json" bash "$HERE/bump.sh" F0rty-Tw0/x > /dev/null 2>&1 )
+  [ -f "$D/rel.json" ] || fail "relative RESULT_FILE not written relative to the caller's cwd"
+}
+
+case_no_result_file_by_default() {
+  make_fixture x
+  : > "$D/gh.log"
+  ( cd "$D" && PATH="$T/bin:$PATH" GH_LOG="$D/gh.log" REPO_URL="$BARE" bash "$HERE/bump.sh" F0rty-Tw0/x > /dev/null 2>&1 )
+  eq "$(find "$D" -name '*.json' | wc -l | tr -d ' ')" "0" "json files written without RESULT_FILE"
+}
+
 # ---------- runner ----------
 
 PASSED=0 FAILED=0 RAN=0
@@ -348,6 +421,14 @@ run_case "PR reuse" case_pr_reuse
 run_case "push rejected" case_push_rejected
 run_case "sync error" case_sync_error
 run_case "conflict dry" case_conflict_dry
+run_case "json release real" case_json_release_real
+run_case "json skip dry" case_json_skip_dry
+run_case "json release dry" case_json_release_dry
+run_case "json PR" case_json_pr
+run_case "json error" case_json_error
+run_case "json escaping" case_json_escaping
+run_case "json relative path" case_json_relative_path
+run_case "no result file by default" case_no_result_file_by_default
 
 [ "$RAN" -gt 0 ] || { echo "FAIL: no case matched '$FILTER'"; exit 1; }
 [ "$FAILED" -eq 0 ] || { echo "$FAILED of $RAN FAILED ($PASSED passed)"; exit 1; }

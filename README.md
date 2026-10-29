@@ -30,6 +30,17 @@ The job summary has one line per addon:
 
 Dry runs prefix each line with `[dry-run] would have: `.
 
+## Report and notifications
+
+After the matrix finishes, a `report` job collects each addon's result (`bump.sh` writes it as JSON to `RESULT_FILE`) and runs `report.sh addons.json results`. It prints one table, `Addon | Result | Version | Interface | Links`, into the job summary. An addon whose job crashed shows `error: no result (job crashed)`.
+
+If something happened (not a dry run, and any result other than `skipped (up to date)`, errors included), the job also:
+
+1. closes every open issue labelled `weekly-report`,
+2. opens `Weekly addon report YYYY-MM-DD` with that label, the table, and an `@` mention of the repo owner, so GitHub notifies you.
+
+A week where every addon is up to date, and every dry run, opens no issue. The job uses the built-in `GITHUB_TOKEN` (`issues: write`), so no extra secret is needed.
+
 ## Setup
 
 1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new):
@@ -74,6 +85,7 @@ gh workflow run weekly.yml -R F0rty-Tw0/wow-addon-updater -f dry_run=true
 ```bash
 bash bump.test.sh            # all cases
 bash bump.test.sh "conflict" # cases whose name contains "conflict"
+bash report.test.sh          # report rendering and the notify decision
 ```
 
 The tests use local bare repos and a stub `gh`, so they never touch GitHub.

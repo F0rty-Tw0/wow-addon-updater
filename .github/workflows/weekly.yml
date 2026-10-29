@@ -1,0 +1,51 @@
+name: Weekly interface bump
+
+on:
+  schedule:
+    - cron: "0 10 * * 3"
+      timezone: "Europe/Copenhagen"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report what would happen without pushing anything"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo:
+          - WhisperMessenger
+          - LevelUpInfo
+          - MouseOverTooltip
+          - RaidGroupWrap
+          - ShoulderCam
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Bump ${{ matrix.repo }}
+        env:
+          GH_TOKEN: ${{ secrets.ADDON_BOT_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          REPO: ${{ matrix.repo }}
+        run: |
+          set +e
+          line=$(bash bump.sh "F0rty-Tw0/${REPO}")
+          status=$?
+          echo "${REPO}: ${line:-error: no result line}" >> "$GITHUB_STEP_SUMMARY"
+          echo "$line"
+          exit $status

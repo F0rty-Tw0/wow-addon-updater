@@ -145,10 +145,13 @@ bash scripts/release.sh "${NEXT#v}" || die "release.sh failed"
 # 5. Push master and the tag together; the addon's release.yml takes it from there.
 if [ -z "$DRY" ]; then
   # git's output stays in the log only: it can hold the token URL.
-  if ! PUSH_ERR=$(git push -q --atomic origin master "$NEXT" 2>&1); then
-    log "$PUSH_ERR"
-    case "$PUSH_ERR" in
-      *non-fast-forward* | *'fetch first'*) die "push rejected (master moved); next run retries" ;;
+  PUSH_RC=0
+  PUSH_OUT=$(git push -q --atomic origin master "$NEXT" 2>&1) || PUSH_RC=$?
+  [ -z "$PUSH_OUT" ] || log "$PUSH_OUT"
+  if [ "$PUSH_RC" -ne 0 ]; then
+    # The clone never fetches again, so a moved master shows up as "fetch first".
+    case "$PUSH_OUT" in
+      *'fetch first'*) die "push rejected (master moved); next run retries" ;;
       *) die "push failed (see run log)" ;;
     esac
   fi

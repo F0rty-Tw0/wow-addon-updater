@@ -55,12 +55,12 @@ run_report() {
   [ "$RC" -eq 0 ] || fail "report.sh exit $RC: $(cat "$D/err")"
 }
 
-# Five addons: released, released + PR, skipped, error, and one with no result file.
+# Five addons: released twice, skipped, error, and one with no result file.
 five_addons() {
   printf '["a/one","a/two","a/three","a/four","a/five"]\n' > "$D/addons.json"
-  add_result one a/one "released v1.0.1, master synced" false v1.0.0 v1.0.1 "20506 → 20507" \
+  add_result one a/one "released v1.0.1" false v1.0.0 v1.0.1 "20506 → 20507" \
     https://github.com/a/one/releases/tag/v1.0.1 ""
-  add_result two a/two "released v2.3.5, master PR #7" false v2.3.4 v2.3.5 "11509 → 11510, 16001 → 16002" \
+  add_result two a/two "released v2.3.5" false v2.3.4 v2.3.5 "11509 → 11510, 16001 → 16002" \
     https://github.com/a/two/releases/tag/v2.3.5 https://github.com/a/two/pull/7
   add_result three a/three "skipped (up to date)" false v1.0.0 v1.0.1 "" "" ""
   add_result four a/four "error: clone failed" false "" "" "" "" ""
@@ -80,8 +80,8 @@ case_render() {
   run_report
   has "$OUT" "# Weekly addon report 2026-10-30" "heading"
   has "$OUT" "$HEADER" "table header"
-  has "$OUT" "| a/one | released v1.0.1, master synced | v1.0.0 → v1.0.1 | 20506 → 20507 | [Release](https://github.com/a/one/releases/tag/v1.0.1) |" "released row"
-  has "$OUT" "| a/two | released v2.3.5, master PR #7 | v2.3.4 → v2.3.5 | 11509 → 11510, 16001 → 16002 | [Release](https://github.com/a/two/releases/tag/v2.3.5) · [PR](https://github.com/a/two/pull/7) |" "PR row"
+  has "$OUT" "| a/one | released v1.0.1 | v1.0.0 → v1.0.1 | 20506 → 20507 | [Release](https://github.com/a/one/releases/tag/v1.0.1) |" "released row"
+  has "$OUT" "| a/two | released v2.3.5 | v2.3.4 → v2.3.5 | 11509 → 11510, 16001 → 16002 | [Release](https://github.com/a/two/releases/tag/v2.3.5) · [PR](https://github.com/a/two/pull/7) |" "pr_url link row"
   has "$OUT" "| a/three | skipped (up to date) | – | – | – |" "skipped row"
   has "$OUT" "| a/four | error: clone failed | – | – | – |" "error row"
   has "$OUT" "| a/five | error: no result (job crashed) | – | – | – |" "missing result row"
@@ -97,10 +97,10 @@ case_render_order() {
 
 case_render_dry() {
   printf '["a/one"]\n' > "$D/addons.json"
-  add_result one a/one "released v1.0.1, master synced" true v1.0.0 v1.0.1 "20506 → 20507" "" ""
+  add_result one a/one "released v1.0.1" true v1.0.0 v1.0.1 "20506 → 20507" "" ""
   run_report
   has "$OUT" "# Weekly addon report 2026-10-30 (dry run)" "dry heading"
-  has "$OUT" "| a/one | released v1.0.1, master synced | v1.0.0 → v1.0.1 | 20506 → 20507 | – |" "dry row has no links"
+  has "$OUT" "| a/one | released v1.0.1 | v1.0.0 → v1.0.1 | 20506 → 20507 | – |" "dry row has no links"
 }
 
 case_render_pipe_in_cell() {
@@ -132,7 +132,7 @@ case_notify_all_skipped() {
 
 case_notify_dry() {
   printf '["a/one"]\n' > "$D/addons.json"
-  add_result one a/one "released v1.0.1, master synced" true v1.0.0 v1.0.1 "20506 → 20507" "" ""
+  add_result one a/one "released v1.0.1" true v1.0.0 v1.0.1 "20506 → 20507" "" ""
   run_report --publish
   eq "$(cat "$D/gh.log")" "" "gh calls on a dry run"
 }
@@ -170,7 +170,7 @@ case_notify_error_only() {
 
 case_notify_one_released_among_skipped() {
   all_skipped false
-  add_result two a/two "released v1.0.1, master synced" false v1.0.0 v1.0.1 "20506 → 20507" "" ""
+  add_result two a/two "released v1.0.1" false v1.0.0 v1.0.1 "20506 → 20507" "" ""
   run_report --publish
   has "$(cat "$D/gh.log")" "label create weekly-report --force -R me/wow-addon-updater" "label created"
 }

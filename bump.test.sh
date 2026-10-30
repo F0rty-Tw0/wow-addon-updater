@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end tests for bump.sh against local bare remotes and a stub gh.
+# End-to-end tests for bump.sh against local bare remotes (no gh, no network).
 # Usage: bash bump.test.sh [case-name-substring]
 set -euo pipefail
 
@@ -7,23 +7,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 FILTER=${1:-}
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/bin"
 
-unset DRY_RUN RESULT_FILE GH_STUB_PR_LIST GH_STUB_CREATE_FAIL FAKE_FAIL FIXTURE_NOTAG FIXTURE_NO_UNRELEASED
-
-# Stub gh: logs its args, answers `pr list` / `pr create` from env.
-cat > "$T/bin/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$GH_LOG"
-case "${1:-} ${2:-}" in
-  "pr list") printf '%s\n' "${GH_STUB_PR_LIST:-}" ;;
-  "pr create")
-    [ -z "${GH_STUB_CREATE_FAIL:-}" ] || exit 1
-    echo "https://github.com/F0rty-Tw0/x/pull/7"
-    ;;
-esac
-EOF
-chmod +x "$T/bin/gh"
+unset DRY_RUN RESULT_FILE FAKE_FAIL FIXTURE_NOTAG FIXTURE_NO_UNRELEASED
 
 # ---------- helpers ----------
 
@@ -42,9 +27,9 @@ refs() { git --git-dir="$BARE" for-each-ref --format='%(refname) %(objectname)';
 bare_show() { git --git-dir="$BARE" show "$1"; }
 bare_log() { git --git-dir="$BARE" log --format=%s "$1"; }
 
-# Stub release.sh mirroring the real contract; $2 non-empty adds a TOC marker.
+# Stub release.sh mirroring the real contract.
 write_release_stub() {
-  local dest=$1 marker=${2:-}
+  local dest=$1
   mkdir -p "$(dirname "$dest")"
   cat > "$dest" <<'EOF'
 #!/usr/bin/env bash
@@ -59,7 +44,6 @@ sed -i "s/^## Interface: .*/## Interface: $FAKE_INTERFACE/" Addon.toc
 sed -i "s/^## Interface-Vanilla: .*/## Interface-Vanilla: $FAKE_VANILLA/" Addon.toc
 sed -i "s/^## Interface-Classic: .*/## Interface-Classic: $FAKE_VANILLA/" Addon.toc
 sed -i "s/^## Version: .*/## Version: v$ver/" Addon.toc
-# EXTRA-HOOK
 head=$(awk '/^## \[Unreleased\]/{exit} {print}' CHANGELOG.md)
 older=$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^## \[/{g=1} g' CHANGELOG.md)
 {
@@ -71,9 +55,6 @@ git add -A
 git commit -q -m "release: v$ver"
 git tag -a "v$ver" -m "Release v$ver"
 EOF
-  if [ -n "$marker" ]; then
-    sed -i 's/^# EXTRA-HOOK$/echo "## X-Tooling: master" >> Addon.toc/' "$dest"
-  fi
 }
 
 # make_fixture <name> [crlf]: bare remote + seed clone with tag v1.0.0.
@@ -111,10 +92,9 @@ seed_push() { G -C "$SEED" commit -q -m "$1"; G -C "$SEED" push -q origin master
 # run_bump <name>: sets OUT (stdout), ERR (stderr), RC.
 run_bump() {
   local name=$1
-  : > "$D/gh.log"
   set +e
   rm -f "$D/result.json"
-  OUT=$(PATH="$T/bin:$PATH" GH_LOG="$D/gh.log" REPO_URL="$BARE" RESULT_FILE="$D/result.json" bash "$HERE/bump.sh" "F0rty-Tw0/$name" 2>"$D/err")
+  OUT=$(REPO_URL="$BARE" RESULT_FILE="$D/result.json" bash "$HERE/bump.sh" "F0rty-Tw0/$name" 2>"$D/err")
   RC=$?
   set -e
   ERR=$(tail -n 15 "$D/err")
@@ -167,32 +147,32 @@ case_skip_real() {
 case_release_real() {
   make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507"
   run_bump x
-  assert_out "released v1.0.1, master synced" 0
+  assert_out "released v1.0.1" 0
   git --git-dir="$BARE" rev-parse -q --verify refs/tags/v1.0.1 > /dev/null || fail "tag v1.0.1 missing"
   has "$(section_of v1.0.1 1.0.1)" "$BULLET (interface 20506 → 20507)." "changelog line under [1.0.1]"
   lacks "$(git --git-dir="$BARE" log -p v1.0.1)" "- probe" "probe leaked into history"
-  has "$(bare_log master)" "chore: merge v1.0.1 interface bump into master" "master merge commit"
+  eq "$(git --git-dir="$BARE" rev-parse refs/heads/master)" "$(git --git-dir="$BARE" rev-parse 'v1.0.1^{commit}')" "master is the tag commit"
 }
 
 case_release_dry() {
   make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507" DRY_RUN=1
   local before; before=$(refs)
   run_bump x
-  assert_out "[dry-run] would have: released v1.0.1, master synced" 0
+  assert_out "[dry-run] would have: released v1.0.1" 0
   eq "$(refs)" "$before" "bare refs"
 }
 
 case_slot_pairing() {
   make_fixture x; export FAKE_INTERFACE="11509, 16002, 20506" FAKE_VANILLA=11510
   run_bump x
-  assert_out "released v1.0.1, master synced" 0
+  assert_out "released v1.0.1" 0
   has "$(section_of v1.0.1 1.0.1)" "$BULLET (interface 16001 → 16002, 11509 → 11510)." "slot pairs"
 }
 
 case_crlf_toc() {
   make_fixture x crlf; export FAKE_INTERFACE="11509, 16001, 20507"
   run_bump x
-  assert_out "released v1.0.1, master synced" 0
+  assert_out "released v1.0.1" 0
   local cl; cl=$(bare_show v1.0.1:CHANGELOG.md)
   has "$cl" "$BULLET (interface 20506 → 20507)." "changelog line"
   if printf '%s' "$cl" | grep -q $'\r'; then fail "CR in changelog"; fi
@@ -206,7 +186,7 @@ case_semver_sort() {
   seed_push c10; G -C "$SEED" tag -a v1.0.10 -m v1.0.10
   G -C "$SEED" push -q origin --tags
   run_bump x
-  assert_out "released v1.0.11, master synced" 0
+  assert_out "released v1.0.11" 0
   git --git-dir="$BARE" rev-parse -q --verify refs/tags/v1.0.11 > /dev/null || fail "tag v1.0.11 missing"
 }
 
@@ -234,97 +214,46 @@ case_release_fails() {
   eq "$(refs)" "$before" "bare refs"
 }
 
-# --- Task 1.2: master tooling overlay and master sync ---
-
-# Master gets a changelog bullet where the tag side inserts the new section.
-master_conflict() {
-  printf '# Changelog\n\n## [Unreleased]\n\n- master feature\n\n## [1.0.0] - 2026-01-01\n\n- first\n' > "$SEED/CHANGELOG.md"
-  G -C "$SEED" add CHANGELOG.md
-  seed_push "master feature"
-}
+# --- Addendum 2026-10-30c: release from master ---
 
 has_ref() { git --git-dir="$BARE" rev-parse -q --verify "$1" > /dev/null || fail "ref $1 missing in bare"; }
 
-case_master_tooling() {
+case_unreleased_shipped() {
   make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507"
-  # tag-only file: present at v1.0.0, deleted on master
-  echo x > "$SEED/scripts/old.pyc"
-  G -C "$SEED" add -A; G -C "$SEED" commit -q -m "tag-only file"
-  G -C "$SEED" tag -f -a v1.0.0 -m "Release v1.0.0"
-  G -C "$SEED" push -q -f origin master --tags
-  G -C "$SEED" rm -q scripts/old.pyc
-  write_release_stub "$SEED/scripts/release.sh" marker
-  G -C "$SEED" add scripts/release.sh
-  seed_push "new tooling"
+  printf '# Changelog\n\n## [Unreleased]\n\n- master feature\n\n## [1.0.0] - 2026-01-01\n\n- first\n' > "$SEED/CHANGELOG.md"
+  G -C "$SEED" add CHANGELOG.md
+  seed_push "master feature"
   run_bump x
-  assert_out "released v1.0.1, master synced" 0
-  has "$(bare_show v1.0.1:Addon.toc)" "## X-Tooling: master" "release used master's release.sh"
-  lacks "$(git --git-dir="$BARE" ls-tree -r v1.0.1 scripts/)" "old.pyc" "tag-only file removed"
-  has "$(bare_log v1.0.1)" "chore: use master release tooling" "overlay commit"
-}
-
-case_tooling_noop() {
-  make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507"
-  run_bump x
-  assert_out "released v1.0.1, master synced" 0
-  lacks "$(bare_log v1.0.1)" "chore: use master release tooling" "overlay commit"
-}
-
-case_conflict_pr() {
-  make_fixture x; master_conflict; export FAKE_INTERFACE="11509, 16001, 20507"
-  local master_before; master_before=$(git --git-dir="$BARE" rev-parse refs/heads/master)
-  run_bump x
-  assert_out "released v1.0.1, master PR #7" 0
+  assert_out "released v1.0.1" 0
   has_ref refs/tags/v1.0.1
-  has_ref refs/heads/interface-bump/v1.0.1
-  eq "$(git --git-dir="$BARE" rev-parse refs/heads/master)" "$master_before" "bare master"
-  lacks "$(bare_show v1.0.1:CHANGELOG.md)" "master feature" "tag changelog"
-  local gh; gh=$(cat "$D/gh.log")
-  has "$gh" "pr create" "gh pr create called"
-  has "$gh" "--base master --head interface-bump/v1.0.1" "pr base/head"
-  has "$gh" "--title Merge v1.0.1 interface bump into master" "pr title"
-  has "$gh" "CHANGELOG.md" "pr body names conflicting file"
+  local want; want=$(printf '%s (interface 20506 → 20507).\n- master feature' "$BULLET")
+  eq "$(section_of v1.0.1 1.0.1 | sed '/^$/d')" "$want" "tag section: bump line first, then master's bullet"
+  eq "$(section_of master 1.0.1 | sed '/^$/d')" "$want" "master section"
+  eq "$(section_of master Unreleased | sed '/^$/d')" "" "[Unreleased] empty on master"
+  eq "$(git --git-dir="$BARE" rev-parse refs/heads/master)" "$(git --git-dir="$BARE" rev-parse 'v1.0.1^{commit}')" "master is the tag commit"
+  lacks "$(git --git-dir="$BARE" log -p master)" "- probe" "probe leaked into history"
 }
 
-case_pr_reuse() {
-  make_fixture x; master_conflict; export FAKE_INTERFACE="11509, 16001, 20507" GH_STUB_PR_LIST=5
+case_already_bumped_on_master() {
+  make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507"
+  sed -i 's/20506/20507/' "$SEED/Addon.toc"
+  G -C "$SEED" add Addon.toc
+  seed_push "toc already bumped"
   run_bump x
-  assert_out "released v1.0.1, master PR #5" 0
-  local gh; gh=$(cat "$D/gh.log")
-  has "$gh" "--head interface-bump/v1.0.1 --state open" "pr list query"
-  lacks "$gh" "pr create" "second PR"
+  assert_out "released v1.0.1" 0
+  has_ref refs/tags/v1.0.1
+  has "$(section_of v1.0.1 1.0.1)" "$BULLET (interface 20506 → 20507)." "changelog line"
 }
 
 case_push_rejected() {
   make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507"
-  cat > "$BARE/hooks/pre-receive" <<'EOF'
-#!/bin/sh
-while read -r old new ref; do
-  if [ "$ref" = refs/heads/master ]; then echo "master is locked" >&2; exit 1; fi
-done
-exit 0
-EOF
+  printf '#!/bin/sh\necho "master is locked" >&2\nexit 1\n' > "$BARE/hooks/pre-receive"
   chmod +x "$BARE/hooks/pre-receive"
-  run_bump x
-  assert_out "released v1.0.1, master PR #7" 0
-  has_ref refs/tags/v1.0.1
-  has_ref refs/heads/interface-bump/v1.0.1
-}
-
-case_sync_error() {
-  make_fixture x; master_conflict; export FAKE_INTERFACE="11509, 16001, 20507" GH_STUB_CREATE_FAIL=1
-  run_bump x
-  assert_out "released v1.0.1, master sync error: gh pr create failed" 1
-  has_ref refs/tags/v1.0.1
-}
-
-case_conflict_dry() {
-  make_fixture x; master_conflict; export FAKE_INTERFACE="11509, 16001, 20507" DRY_RUN=1
   local before; before=$(refs)
   run_bump x
-  assert_out "[dry-run] would have: released v1.0.1, master PR" 0
+  assert_out "error: push rejected (master moved); next run retries" 1
   eq "$(refs)" "$before" "bare refs"
-  [ ! -s "$D/gh.log" ] || fail "gh was called: $(cat "$D/gh.log")"
+  if git --git-dir="$BARE" rev-parse -q --verify refs/tags/v1.0.1 > /dev/null; then fail "tag v1.0.1 pushed"; fi
 }
 
 # --- Addendum 2026-10-30: RESULT_FILE json ---
@@ -332,8 +261,8 @@ case_conflict_dry() {
 case_json_release_real() {
   make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507"
   run_bump x
-  assert_out "released v1.0.1, master synced" 0
-  eq "$(result_json)" '{"base":"v1.0.0","dry_run":false,"next":"v1.0.1","pairs":"20506 → 20507","pr_url":"","repo":"F0rty-Tw0/x","result":"released v1.0.1, master synced","tag_url":"https://github.com/F0rty-Tw0/x/releases/tag/v1.0.1"}' "result json"
+  assert_out "released v1.0.1" 0
+  eq "$(result_json)" '{"base":"v1.0.0","dry_run":false,"next":"v1.0.1","pairs":"20506 → 20507","pr_url":"","repo":"F0rty-Tw0/x","result":"released v1.0.1","tag_url":"https://github.com/F0rty-Tw0/x/releases/tag/v1.0.1"}' "result json"
 }
 
 case_json_skip_dry() {
@@ -346,15 +275,8 @@ case_json_skip_dry() {
 case_json_release_dry() {
   make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507" DRY_RUN=1
   run_bump x
-  assert_out "[dry-run] would have: released v1.0.1, master synced" 0
-  eq "$(result_json)" '{"base":"v1.0.0","dry_run":true,"next":"v1.0.1","pairs":"20506 → 20507","pr_url":"","repo":"F0rty-Tw0/x","result":"released v1.0.1, master synced","tag_url":""}' "result json"
-}
-
-case_json_pr() {
-  make_fixture x; master_conflict; export FAKE_INTERFACE="11509, 16001, 20507"
-  run_bump x
-  assert_out "released v1.0.1, master PR #7" 0
-  eq "$(result_json)" '{"base":"v1.0.0","dry_run":false,"next":"v1.0.1","pairs":"20506 → 20507","pr_url":"https://github.com/F0rty-Tw0/x/pull/7","repo":"F0rty-Tw0/x","result":"released v1.0.1, master PR #7","tag_url":"https://github.com/F0rty-Tw0/x/releases/tag/v1.0.1"}' "result json"
+  assert_out "[dry-run] would have: released v1.0.1" 0
+  eq "$(result_json)" '{"base":"v1.0.0","dry_run":true,"next":"v1.0.1","pairs":"20506 → 20507","pr_url":"","repo":"F0rty-Tw0/x","result":"released v1.0.1","tag_url":""}' "result json"
 }
 
 case_json_error() {
@@ -373,15 +295,13 @@ case_json_escaping() {
 
 case_json_relative_path() {
   make_fixture x
-  : > "$D/gh.log"
-  ( cd "$D" && PATH="$T/bin:$PATH" GH_LOG="$D/gh.log" REPO_URL="$BARE" RESULT_FILE="rel.json" bash "$HERE/bump.sh" F0rty-Tw0/x > /dev/null 2>&1 )
+  ( cd "$D" && REPO_URL="$BARE" RESULT_FILE="rel.json" bash "$HERE/bump.sh" F0rty-Tw0/x > /dev/null 2>&1 )
   [ -f "$D/rel.json" ] || fail "relative RESULT_FILE not written relative to the caller's cwd"
 }
 
 case_no_result_file_by_default() {
   make_fixture x
-  : > "$D/gh.log"
-  ( cd "$D" && PATH="$T/bin:$PATH" GH_LOG="$D/gh.log" REPO_URL="$BARE" bash "$HERE/bump.sh" F0rty-Tw0/x > /dev/null 2>&1 )
+  ( cd "$D" && REPO_URL="$BARE" bash "$HERE/bump.sh" F0rty-Tw0/x > /dev/null 2>&1 )
   eq "$(find "$D" -name '*.json' | wc -l | tr -d ' ')" "0" "json files written without RESULT_FILE"
 }
 
@@ -414,17 +334,12 @@ run_case "semver sort" case_semver_sort
 run_case "no unreleased heading" case_no_unreleased
 run_case "no tag" case_no_tag
 run_case "release.sh fails" case_release_fails
-run_case "master tooling" case_master_tooling
-run_case "tooling no-op" case_tooling_noop
-run_case "conflict -> PR" case_conflict_pr
-run_case "PR reuse" case_pr_reuse
+run_case "unreleased shipped" case_unreleased_shipped
+run_case "already bumped on master" case_already_bumped_on_master
 run_case "push rejected" case_push_rejected
-run_case "sync error" case_sync_error
-run_case "conflict dry" case_conflict_dry
 run_case "json release real" case_json_release_real
 run_case "json skip dry" case_json_skip_dry
 run_case "json release dry" case_json_release_dry
-run_case "json PR" case_json_pr
 run_case "json error" case_json_error
 run_case "json escaping" case_json_escaping
 run_case "json relative path" case_json_relative_path

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bash bump.sh <owner/repo>
 # Releases a TOC-only patch when the latest tag lags Blizzard's live interface
-# numbers, then syncs master. Stdout is exactly one result line; logs go to stderr.
+# numbers, built from master (its unreleased work ships too). Stdout is exactly one result line; logs go to stderr.
 # Env: GH_TOKEN, DRY_RUN (non-empty = dry run), REPO_URL (clone source override),
 # RESULT_FILE (path; also write the outcome there as JSON, for report.sh).
 set -euo pipefail
@@ -15,7 +15,7 @@ DRY=${DRY_RUN:-}
 # A relative RESULT_FILE is resolved now, because the script cd's into the clone later.
 RESULT_FILE=${RESULT_FILE:-}
 case "$RESULT_FILE" in '' | /* | [A-Za-z]:*) ;; *) RESULT_FILE="$PWD/$RESULT_FILE" ;; esac
-BASE='' NEXT='' PAIRS='' TAG_URL='' PR_URL=''
+BASE='' NEXT='' PAIRS='' TAG_URL=''
 
 log() { echo "bump: $*"; }
 
@@ -34,9 +34,9 @@ write_result_file() { # result text (unprefixed)
   [ -n "$RESULT_FILE" ] || return 0
   local dry=false
   [ -z "$DRY" ] || dry=true
-  printf '{"repo":"%s","result":"%s","dry_run":%s,"base":"%s","next":"%s","pairs":"%s","tag_url":"%s","pr_url":"%s"}\n' \
+  printf '{"repo":"%s","result":"%s","dry_run":%s,"base":"%s","next":"%s","pairs":"%s","tag_url":"%s","pr_url":""}\n' \
     "$(json_str "$REPO")" "$(json_str "$1")" "$dry" "$(json_str "$BASE")" "$(json_str "$NEXT")" \
-    "$(json_str "$PAIRS")" "$(json_str "$TAG_URL")" "$(json_str "$PR_URL")" > "$RESULT_FILE" \
+    "$(json_str "$PAIRS")" "$(json_str "$TAG_URL")" > "$RESULT_FILE" \
     || log "could not write $RESULT_FILE"
 }
 
@@ -68,23 +68,21 @@ BASE=$(git tag -l 'v*' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort
 [ -n "$BASE" ] || die "no release tag"
 IFS=. read -r MAJOR MINOR PATCH <<< "${BASE#v}"
 NEXT="v$MAJOR.$MINOR.$((PATCH + 1))"
-BRANCH="interface-bump/$NEXT"
 if git rev-parse -q --verify "refs/tags/$NEXT" > /dev/null; then
   die "tag $NEXT already exists"
 fi
 log "base $BASE, next $NEXT"
 
-# 3. Release branch at BASE.
-git checkout -q -b "$BRANCH" "$BASE"
-# Release tooling comes from master: scripts/ becomes an exact copy of master's.
-git rm -r -q --ignore-unmatch scripts
-git checkout origin/master -- scripts/ || die "master has no scripts/ directory"
-git diff --cached --quiet || git commit -q -m 'chore: use master release tooling'
-TOOLING=$(git rev-parse HEAD)
-
-# Insert $1 on the line after `## [Unreleased]` (the blank line after it is kept).
+# Insert $1 as the first bullet under `## [Unreleased]`, after the blank line that
+# follows the heading; master's own bullets stay below it.
 add_changelog_line() {
-  LINE="$1" awk '{ print } /^## \[Unreleased\]/ { print ENVIRON["LINE"] }' CHANGELOG.md > CHANGELOG.md.new
+  LINE="$1" awk '
+    s == 1 { if ($0 ~ /^\r?$/) { print; print ENVIRON["LINE"]; s = 2; next } print ENVIRON["LINE"]; s = 2 }
+    s == 2 { if ($0 ~ /^## /) print ""; s = 0 }
+    { print }
+    /^## \[Unreleased\]/ { s = 1 }
+    END { if (s == 1) { print ""; print ENVIRON["LINE"] } }
+  ' CHANGELOG.md > CHANGELOG.md.new
   mv CHANGELOG.md.new CHANGELOG.md
 }
 
@@ -118,15 +116,17 @@ interface_pairs() {
     }'
 }
 
-# 4. Probe: run release.sh with a throwaway changelog line to learn the changes.
+# 3. Probe on master: run release.sh with a throwaway changelog line to learn the
+# changes. BASE is the comparison point, so an interface change already sitting
+# unreleased on master still counts.
 grep -q '^## \[Unreleased\]' CHANGELOG.md || die "CHANGELOG.md has no ## [Unreleased] heading"
 add_changelog_line '- probe'
 git add CHANGELOG.md
 git commit -q -m 'chore: probe interface bump'
 bash scripts/release.sh "${NEXT#v}" || die "release.sh failed"
-PAIRS=$(interface_pairs "$TOOLING" HEAD)
+PAIRS=$(interface_pairs "$BASE" HEAD)
 git tag -d "$NEXT" > /dev/null
-git reset -q --hard "$TOOLING"
+git reset -q --hard origin/master
 git clean -fdq
 if [ -z "$PAIRS" ]; then
   log "interface numbers already current"
@@ -135,54 +135,15 @@ if [ -z "$PAIRS" ]; then
 fi
 log "interface changes: $PAIRS"
 
-# 5. Release.
+# 4. Release: the bump line goes first, master's own bullets follow it.
 add_changelog_line "- Updated for the latest World of Warcraft patch (interface $PAIRS)."
 git add CHANGELOG.md
 git commit -q -m 'chore: note interface bump'
 bash scripts/release.sh "${NEXT#v}" || die "release.sh failed"
 
-# 6. Push the tag only; the addon's release.yml takes it from there.
+# 5. Push master and the tag together; the addon's release.yml takes it from there.
 if [ -z "$DRY" ]; then
-  git push -q origin "$NEXT" || die "push of $NEXT failed"
+  git push -q --atomic origin master "$NEXT" || die "push rejected (master moved); next run retries"
   TAG_URL="https://github.com/$REPO/releases/tag/$NEXT"
 fi
-
-# 7. Sync master.
-sync_fail() { result "released $NEXT, master sync error: $1"; exit 1; }
-
-# Open (or reuse) the PR that merges $BRANCH into master; $1 = why, for the body.
-master_pr() {
-  if [ -n "$DRY" ]; then
-    result "released $NEXT, master PR"
-    exit 0
-  fi
-  git push -q origin "$BRANCH" || sync_fail "push of $BRANCH failed"
-  local n url
-  n=$(gh pr list -R "$REPO" --head "$BRANCH" --state open --json number -q '.[0].number // empty') \
-    || sync_fail "gh pr list failed"
-  [[ $n =~ ^[0-9]+$ ]] || n=''
-  if [ -z "$n" ]; then
-    url=$(gh pr create -R "$REPO" --base master --head "$BRANCH" \
-      --title "Merge $NEXT interface bump into master" --body "$1") \
-      || sync_fail "gh pr create failed"
-    n=${url##*/}
-    [[ $n =~ ^[0-9]+$ ]] || sync_fail "gh pr create failed"
-  fi
-  PR_URL="https://github.com/$REPO/pull/$n"
-  result "released $NEXT, master PR #$n"
-  exit 0
-}
-
-git checkout -q -B master origin/master
-if git merge -q --no-ff -m "chore: merge $NEXT interface bump into master" "$BRANCH"; then
-  if [ -z "$DRY" ] && ! git push -q origin master; then
-    log "push of master rejected; falling back to a PR"
-    master_pr "master moved during the release, so $BRANCH could not be pushed to it."
-  fi
-  result "released $NEXT, master synced"
-  exit 0
-fi
-CONFLICTS=$(git diff --name-only --diff-filter=U | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')
-git merge --abort || sync_fail "git merge --abort failed"
-[ -n "$CONFLICTS" ] || sync_fail "merge into master failed"
-master_pr "Conflicting files: $CONFLICTS"
+result "released $NEXT"

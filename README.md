@@ -2,7 +2,7 @@
 
 Weekly bot that keeps my WoW addons on the current game version.
 
-Every Wednesday at 10:00 Copenhagen time it checks each addon below. If Blizzard's live interface numbers have moved past what the addon's latest release tag ships, it releases a patch built from that tag. The patch contains only the TOC interface/version bump and one changelog line. Unreleased work on master is never shipped. Afterwards it merges the release back into master, or opens a PR when the merge conflicts.
+Every Wednesday at 10:00 Copenhagen time it checks each addon below. If Blizzard's live interface numbers have moved past what the addon's latest release tag ships, it releases a patch from master. Whatever is unreleased on master ships with it: the interface/version bump, an `Updated for the latest World of Warcraft patch` line at the top of `[Unreleased]`, and the rest of that list. The release commit and tag are pushed to master together.
 
 The addons it checks are listed in [`addons.json`](addons.json) as `owner/repo` names.
 
@@ -11,10 +11,9 @@ The addons it checks are listed in [`addons.json`](addons.json) as `owner/repo` 
 `bump.sh <owner/repo>` runs once per entry in `addons.json`, as a matrix job in `.github/workflows/weekly.yml`:
 
 1. Clone the addon, take the highest `vX.Y.Z` tag as the base and the next patch as the new version.
-2. Branch from the base tag and copy master's `scripts/` onto it, so release tooling fixes apply. `scripts/` is not packaged.
-3. Probe: run the addon's own `scripts/release.sh` and compare the `## Interface` lines. No change means skip.
-4. Release: add `- Updated for the latest World of Warcraft patch (interface OLD → NEW).` under `## [Unreleased]`, run `release.sh` again, push the tag only. The addon's own `release.yml` then packages and uploads it.
-5. Merge the tag into master. On a conflict, or when the master push is rejected, it opens (or reuses) a PR from `interface-bump/<version>` instead.
+2. Probe on master: add a throwaway `- probe` bullet, run the addon's own `scripts/release.sh`, and compare the `## Interface` lines against the base tag (so a bump already sitting unreleased on master still counts). No change means skip. Then reset to `origin/master`.
+3. Release: add `- Updated for the latest World of Warcraft patch (interface OLD → NEW).` as the first bullet under `## [Unreleased]`, master's own bullets after it, and run `release.sh` again.
+4. Push `master` and the tag in one atomic push. The addon's own `release.yml` then packages and uploads it. If the push is rejected (master moved), nothing is pushed and the next run retries.
 
 ## Results
 
@@ -23,10 +22,8 @@ The job summary has one line per addon:
 | Result | Meaning |
 |---|---|
 | `skipped (up to date)` | Nothing to do |
-| `released vX.Y.Z, master synced` | Released and merged into master |
-| `released vX.Y.Z, master PR #N` | Released; master needs the PR merged |
-| `released vX.Y.Z, master sync error: <msg>` | Released; master was not synced. Not retried, so sync it by hand |
-| `error: <msg>` | Nothing was pushed |
+| `released vX.Y.Z` | Released from master; master and the tag are pushed |
+| `error: <msg>` | Nothing was pushed (a rejected push retries next run) |
 
 Dry runs prefix each line with `[dry-run] would have: `.
 
@@ -46,7 +43,7 @@ A week where every addon is up to date, and every dry run, opens no issue. The j
 1. Create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new):
    - Resource owner: the account that owns the addons
    - Repository access: only the repos listed in `addons.json`
-   - Permissions: Contents read/write, Pull requests read/write (Metadata read is added automatically)
+   - Permissions: Contents read/write (Metadata read is added automatically)
    - Pick an expiry and note it. Once the token expires, every addon shows `error:` in the summary.
 2. Save it as the `ADDON_BOT_TOKEN` secret:
 
@@ -84,8 +81,8 @@ gh workflow run weekly.yml -R F0rty-Tw0/wow-addon-updater -f dry_run=true
 
 ```bash
 bash bump.test.sh            # all cases
-bash bump.test.sh "conflict" # cases whose name contains "conflict"
+bash bump.test.sh "push"     # cases whose name contains "push"
 bash report.test.sh          # report rendering and the notify decision
 ```
 
-The tests use local bare repos and a stub `gh`, so they never touch GitHub.
+The tests use local bare repos, so they never touch GitHub.

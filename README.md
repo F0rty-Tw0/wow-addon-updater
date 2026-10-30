@@ -11,9 +11,9 @@ The addons it checks are listed in [`addons.json`](addons.json) as `owner/repo` 
 `bump.sh <owner/repo>` runs once per entry in `addons.json`, as a matrix job in `.github/workflows/weekly.yml`:
 
 1. Clone the addon, take the highest `vX.Y.Z` tag as the base and the next patch as the new version.
-2. Probe on master: add a throwaway `- probe` bullet, run the addon's own `scripts/release.sh`, and compare the `## Interface` lines against the base tag (so a bump already sitting unreleased on master still counts). No change means skip. Then reset to `origin/master`.
+2. Probe on master: add a throwaway `- probe` bullet, run the addon's own `scripts/release.sh`, and compare the `## Interface` lines against the base tag (so a bump already sitting unreleased on master still counts, including a hand edit of an interface number). No change means skip. Then reset to `origin/master`.
 3. Release: add `- Updated for the latest World of Warcraft patch (interface OLD → NEW).` as the first bullet under `## [Unreleased]`, master's own bullets after it, and run `release.sh` again.
-4. Push `master` and the tag in one atomic push. The addon's own `release.yml` then packages and uploads it. If the push is rejected (master moved), nothing is pushed and the next run retries.
+4. Push `master` and the tag in one atomic push. The addon's own `release.yml` then packages and uploads it. If the push fails, nothing is pushed: `push rejected (master moved)` retries next run, `push failed (see run log)` (auth, network) needs a look at the job log.
 
 ## Results
 
@@ -23,7 +23,7 @@ The job summary has one line per addon:
 |---|---|
 | `skipped (up to date)` | Nothing to do |
 | `released vX.Y.Z` | Released from master; master and the tag are pushed |
-| `error: <msg>` | Nothing was pushed (a rejected push retries next run) |
+| `error: <msg>` | Nothing was pushed (`push rejected (master moved)` retries next run) |
 
 Dry runs prefix each line with `[dry-run] would have: `.
 

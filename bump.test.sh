@@ -152,6 +152,8 @@ case_release_real() {
   has "$(section_of v1.0.1 1.0.1)" "$BULLET (interface 20506 → 20507)." "changelog line under [1.0.1]"
   lacks "$(git --git-dir="$BARE" log -p v1.0.1)" "- probe" "probe leaked into history"
   eq "$(git --git-dir="$BARE" rev-parse refs/heads/master)" "$(git --git-dir="$BARE" rev-parse 'v1.0.1^{commit}')" "master is the tag commit"
+  # Empty [Unreleased]: blank lines stay on both sides of the new bullet.
+  eq "$(bare_show master~1:CHANGELOG.md)" "$(printf '# Changelog\n\n## [Unreleased]\n\n%s (interface 20506 → 20507).\n\n## [1.0.0] - 2026-01-01\n\n- first' "$BULLET")" "changelog layout before release.sh"
 }
 
 case_release_dry() {
@@ -230,6 +232,8 @@ case_unreleased_shipped() {
   eq "$(section_of v1.0.1 1.0.1 | sed '/^$/d')" "$want" "tag section: bump line first, then master's bullet"
   eq "$(section_of master 1.0.1 | sed '/^$/d')" "$want" "master section"
   eq "$(section_of master Unreleased | sed '/^$/d')" "" "[Unreleased] empty on master"
+  # Exact layout handed to release.sh (the commit before the release commit).
+  eq "$(bare_show master~1:CHANGELOG.md)" "$(printf '# Changelog\n\n## [Unreleased]\n\n%s (interface 20506 → 20507).\n- master feature\n\n## [1.0.0] - 2026-01-01\n\n- first' "$BULLET")" "changelog layout before release.sh"
   eq "$(git --git-dir="$BARE" rev-parse refs/heads/master)" "$(git --git-dir="$BARE" rev-parse 'v1.0.1^{commit}')" "master is the tag commit"
   lacks "$(git --git-dir="$BARE" log -p master)" "- probe" "probe leaked into history"
 }
@@ -251,9 +255,48 @@ case_push_rejected() {
   chmod +x "$BARE/hooks/pre-receive"
   local before; before=$(refs)
   run_bump x
-  assert_out "error: push rejected (master moved); next run retries" 1
+  assert_out "error: push failed (see run log)" 1
   eq "$(refs)" "$before" "bare refs"
   if git --git-dir="$BARE" rev-parse -q --verify refs/tags/v1.0.1 > /dev/null; then fail "tag v1.0.1 pushed"; fi
+}
+
+# Only master is refused: the atomic push must not land the tag alone.
+case_master_only_rejected() {
+  make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507"
+  printf '#!/bin/sh\n[ "$1" = refs/heads/master ] && { echo "no master" >&2; exit 1; }\nexit 0\n' > "$BARE/hooks/update"
+  chmod +x "$BARE/hooks/update"
+  local before; before=$(refs)
+  run_bump x
+  assert_out "error: push failed (see run log)" 1
+  eq "$(refs)" "$before" "bare refs"
+}
+
+# Someone pushes to master while release.sh runs: nothing is pushed, and the
+# next run releases on top of their commit.
+case_master_moved() {
+  make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507"
+  local other="$D/other"; G clone -q "$BARE" "$other"
+  # release.sh runs twice per bump (probe, release); push from $other on the 2nd call.
+  cat > "$SEED/scripts/race.sh" <<EOR
+#!/usr/bin/env bash
+c=\$(cat "$D/count" 2>/dev/null || echo 0); echo \$((c+1)) > "$D/count"
+if [ "\$c" = 1 ]; then
+  git -C "$other" pull -q
+  echo z >> "$other/z.txt"
+  git -C "$other" -c user.name=o -c user.email=o@o add z.txt
+  git -C "$other" -c user.name=o -c user.email=o@o commit -qm race
+  git -C "$other" push -q origin master
+fi
+EOR
+  sed -i '2a bash "$(dirname "$0")/race.sh"' "$SEED/scripts/release.sh"
+  G -C "$SEED" add -A; seed_push "race hook"
+  run_bump x
+  assert_out "error: push rejected (master moved); next run retries" 1
+  if git --git-dir="$BARE" rev-parse -q --verify refs/tags/v1.0.1 > /dev/null; then fail "tag v1.0.1 pushed"; fi
+  echo 5 > "$D/count"
+  run_bump x
+  assert_out "released v1.0.1" 0
+  has "$(bare_log master)" "race" "release built on the racing commit"
 }
 
 # --- Addendum 2026-10-30: RESULT_FILE json ---
@@ -337,6 +380,8 @@ run_case "release.sh fails" case_release_fails
 run_case "unreleased shipped" case_unreleased_shipped
 run_case "already bumped on master" case_already_bumped_on_master
 run_case "push rejected" case_push_rejected
+run_case "master only rejected" case_master_only_rejected
+run_case "master moved" case_master_moved
 run_case "json release real" case_json_release_real
 run_case "json skip dry" case_json_skip_dry
 run_case "json release dry" case_json_release_dry

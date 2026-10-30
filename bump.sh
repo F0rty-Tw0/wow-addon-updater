@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Usage: bash bump.sh <owner/repo>
-# Releases a TOC-only patch when the latest tag lags Blizzard's live interface
-# numbers, built from master (its unreleased work ships too). Stdout is exactly one result line; logs go to stderr.
+# Releases master as the next patch version when the latest tag lags Blizzard's
+# live interface numbers; master's unreleased work ships with it.
+# Stdout is exactly one result line; logs go to stderr.
 # Env: GH_TOKEN, DRY_RUN (non-empty = dry run), REPO_URL (clone source override),
 # RESULT_FILE (path; also write the outcome there as JSON, for report.sh).
 set -euo pipefail
@@ -143,7 +144,14 @@ bash scripts/release.sh "${NEXT#v}" || die "release.sh failed"
 
 # 5. Push master and the tag together; the addon's release.yml takes it from there.
 if [ -z "$DRY" ]; then
-  git push -q --atomic origin master "$NEXT" || die "push rejected (master moved); next run retries"
+  # git's output stays in the log only: it can hold the token URL.
+  if ! PUSH_ERR=$(git push -q --atomic origin master "$NEXT" 2>&1); then
+    log "$PUSH_ERR"
+    case "$PUSH_ERR" in
+      *non-fast-forward* | *'fetch first'*) die "push rejected (master moved); next run retries" ;;
+      *) die "push failed (see run log)" ;;
+    esac
+  fi
   TAG_URL="https://github.com/$REPO/releases/tag/$NEXT"
 fi
 result "released $NEXT"

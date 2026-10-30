@@ -263,6 +263,7 @@ case_push_rejected() {
 # Only master is refused: the atomic push must not land the tag alone.
 case_master_only_rejected() {
   make_fixture x; export FAKE_INTERFACE="11509, 16001, 20507"
+  # shellcheck disable=SC2016 # $1 belongs to the hook script
   printf '#!/bin/sh\n[ "$1" = refs/heads/master ] && { echo "no master" >&2; exit 1; }\nexit 0\n' > "$BARE/hooks/update"
   chmod +x "$BARE/hooks/update"
   local before; before=$(refs)
@@ -288,6 +289,7 @@ if [ "\$c" = 1 ]; then
   git -C "$other" push -q origin master
 fi
 EOR
+  # shellcheck disable=SC2016 # $0 belongs to release.sh
   sed -i '2a bash "$(dirname "$0")/race.sh"' "$SEED/scripts/release.sh"
   G -C "$SEED" add -A; seed_push "race hook"
   run_bump x
